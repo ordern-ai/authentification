@@ -1,11 +1,12 @@
 from datetime import timedelta
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager
 from flask_bcrypt import Bcrypt
 from flask_mail import Mail
 import os
 from dotenv import load_dotenv
+from app.access import restrict_blueprint_access
 
 import logging
 
@@ -59,11 +60,24 @@ def create_app():
             401,
         )
 
+    @app.errorhandler(403)
+    def forbidden(e):
+        return {
+            "error": "Forbidden",
+            "message": "Your IP is not authorized to access this resource",
+        }, 403
+
     # Register blueprints
     from app.auth.routes import auth_bp
     from app.admin.routes import admin_bp
     from app.company.routes import company_bp
     from app.two_factor.routes import two_factor_bp
+
+    # blueprint access restrictions
+    # @app.before_request
+    # @restrict_blueprint_access("admin_bp")
+    # def restrict_admin():
+    #     pass
 
     app.register_blueprint(auth_bp, url_prefix="/auth")
     app.register_blueprint(admin_bp, url_prefix="/admin")
