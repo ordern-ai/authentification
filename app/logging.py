@@ -1,5 +1,7 @@
 # logging.py contains functions for logging authentication events with detailed information for auditing and monitoring.
 from datetime import datetime
+
+from flask import request
 from app.models import AuthLog, User
 
 
@@ -51,3 +53,19 @@ def log_auth_event(user_id, event_type, request, status):
         # Log the error but don't raise it - logging shouldn't break authentication
         print(f"Error logging auth event: {str(e)}")
         db.session.rollback()
+
+
+def log_admin_action(user_id, action_type, details=None):
+    from app import db
+
+    """Log administrative actions for audit purposes"""
+    log = AuthLog(
+        user_id=user_id,
+        event_type=f"admin_{action_type}",
+        ip_address=request.remote_addr,
+        user_agent=request.user_agent.string,
+        status="success",
+        details=details,
+    )
+    db.session.add(log)
+    db.session.commit()

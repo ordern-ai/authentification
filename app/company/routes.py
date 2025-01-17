@@ -1,5 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
+
+from app.permissions import company_admin_or_higher, role_required, UserRole
 from ..models import User, Company
 from .. import db
 from functools import wraps
@@ -137,3 +139,69 @@ def company_settings(company_id):
 
     db.session.commit()
     return jsonify({"message": "Company settings updated successfully"})
+
+
+@company_bp.route("/companies", methods=["GET"])
+@jwt_required()
+@role_required(UserRole.SYSTEM_ADMIN)
+def get_companies():
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 20, type=int)
+    search = request.args.get("search", "")
+
+    query = Company.query
+
+    if search:
+        query = query.filter(Company.name.ilike(f"%{search}%"))
+
+    companies = query.paginate(page=page, per_page=per_page)
+
+    return jsonify(
+        {
+            "companies": [
+                {
+                    "id": company.id,
+                    "name": company.name,
+                    "user_count": len(company.users),
+                    "created_at": company.created_at.isoformat(),
+                    "active_users": len([u for u in company.users if u.is_active]),
+                    "users_with_2fa": len(
+                        [u for u in company.users if u.two_factor_enabled]
+                    ),
+                }
+                for company in companies.items
+            ],
+            "total": companies.total,
+            "pages": companies.pages,
+            "current_page": companies.page,
+        }
+    )
+
+
+@company_bp.route("/companies/<int:company_id>", methods=["PUT"])
+@jwt_required()
+@company_admin_required
+def update_company(company_id):
+    company = Company.query.get_or_404(company_id)
+    data = request.get_json()
+
+    if "name" in data:
+        company.name = data["name"]
+
+    db.session.commit()
+    return jsonify({"message": "Company updated successfully"})
+
+
+@company_bp.route("/companies/<int:company_id>", methods=["DELETE"])
+@jwt_required()
+@company_admin_required
+def delete_company(company_id):
+    company = Company.query.get_or_404(company_id)
+
+    # Check if company has users
+    if company.users:
+        return jsonify({"error": "Cannot delete company with existing users"}), 400
+
+    db.session.delete(company)
+    db.session.commit()
+    return jsonify({"message": "Company deleted successfully"})
