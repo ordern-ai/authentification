@@ -12,7 +12,6 @@ from app.permissions import (
     UserRole,
     company_admin_or_higher,
     role_required,
-    admin_required,
 )
 from app.logging import log_admin_action
 
@@ -123,7 +122,7 @@ def manage_system_admins():
 
     if request.method == "GET":
         admins = User.query.filter(
-            User.role.in_([UserRole.SUPER_ADMIN.value, UserRole.SYSTEM_ADMIN.value])
+            User.role.in_([UserRole.SUPER_ADMIN, UserRole.SYSTEM_ADMIN])
         ).all()
         return jsonify({"admins": [admin.to_dict() for admin in admins]})
 
@@ -174,7 +173,7 @@ def system_audit():
     # Get system health metrics
     active_sessions = (
         db.session.query(db.func.count(User.id))
-        .filter(User.last_login >= datetime.utcnow() - timedelta(minutes=30))
+        .filter(User.last_login >= datetime.now() - timedelta(minutes=30))
         .scalar()
     )
 
@@ -232,11 +231,11 @@ def get_users():
     query = User.query
 
     # Filter based on role permissions
-    if current_user.role == UserRole.COMPANY_ADMIN.value:
+    if current_user.role == UserRole.COMPANY_ADMIN:
         query = query.filter(User.company_id == current_user.company_id)
-    elif current_user.role == UserRole.SYSTEM_ADMIN.value:
+    elif current_user.role == UserRole.SYSTEM_ADMIN:
         # System admins can't see super admins
-        query = query.filter(User.role != UserRole.SUPER_ADMIN.value)
+        query = query.filter(User.role != UserRole.SUPER_ADMIN)
 
     if search:
         query = query.filter(
@@ -262,7 +261,7 @@ def get_users():
 
 @admin_bp.route("/users", methods=["POST"])
 @jwt_required()
-@admin_required
+@role_required(UserRole.SYSTEM_ADMIN)
 def create_user():
     data = request.get_json()
     required_fields = ["email", "password", "role"]
@@ -299,7 +298,7 @@ def create_user():
 
 @admin_bp.route("/users/<int:user_id>", methods=["PUT"])
 @jwt_required()
-@admin_required
+@role_required(UserRole.SYSTEM_ADMIN)
 def update_user(user_id):
     user = User.query.get_or_404(user_id)
     data = request.get_json()
@@ -332,7 +331,7 @@ def update_user(user_id):
 
 @admin_bp.route("/users/<int:user_id>", methods=["DELETE"])
 @jwt_required()
-@admin_required
+@role_required(UserRole.SYSTEM_ADMIN)
 def delete_user(user_id):
     user = User.query.get_or_404(user_id)
     db.session.delete(user)
@@ -356,10 +355,10 @@ def search_users():
     current_user = User.query.get(get_jwt_identity())
     base_query = User.query
 
-    if current_user.role == UserRole.COMPANY_ADMIN.value:
+    if current_user.role == UserRole.COMPANY_ADMIN:
         base_query = base_query.filter(User.company_id == current_user.company_id)
-    elif current_user.role == UserRole.SYSTEM_ADMIN.value:
-        base_query = base_query.filter(User.role != UserRole.SUPER_ADMIN.value)
+    elif current_user.role == UserRole.SYSTEM_ADMIN:
+        base_query = base_query.filter(User.role != UserRole.SUPER_ADMIN)
 
     users = base_query.filter(
         or_(
@@ -386,7 +385,7 @@ def search_users():
 
 @admin_bp.route("/logs", methods=["GET"])
 @jwt_required()
-@admin_required
+@role_required(UserRole.SYSTEM_ADMIN)
 def get_logs():
     page = request.args.get("page", 1, type=int)
     per_page = request.args.get("per_page", 50, type=int)
@@ -449,7 +448,7 @@ def get_logs():
 
 @admin_bp.route("/users/bulk-action", methods=["POST"])
 @jwt_required()
-@admin_required
+@role_required(UserRole.SYSTEM_ADMIN)
 def bulk_user_action():
     data = request.get_json()
     if not data or "user_ids" not in data or "action" not in data:
@@ -486,7 +485,7 @@ def bulk_user_action():
 
 @admin_bp.route("/analytics/user-activity", methods=["GET"])
 @jwt_required()
-@admin_required
+@role_required(UserRole.SYSTEM_ADMIN)
 def get_user_activity():
     days = request.args.get("days", 30, type=int)
     start_date = datetime.utcnow() - timedelta(days=days)
@@ -529,7 +528,7 @@ def get_user_activity():
 
 @admin_bp.route("/logs/summary", methods=["GET"])
 @jwt_required()
-@admin_required
+@role_required(UserRole.SYSTEM_ADMIN)
 def get_logs_summary():
     days = request.args.get("days", 90, type=int)
     cutoff_date = datetime.utcnow() - timedelta(days=days)
@@ -617,7 +616,7 @@ def check_permissions():
 
 @admin_bp.route("/statistics", methods=["GET"])
 @jwt_required()
-@admin_required
+@role_required(UserRole.SYSTEM_ADMIN)
 def get_statistics():
     total_users = User.query.count()
     active_users = User.query.filter_by(is_active=True).count()

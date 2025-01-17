@@ -28,14 +28,14 @@ def role_required(minimum_role):
                 return jsonify({"error": "Authentication required"}), 401
 
             role_hierarchy = {
-                UserRole.SUPER_ADMIN.value: 4,
-                UserRole.SYSTEM_ADMIN.value: 3,
-                UserRole.COMPANY_ADMIN.value: 2,
-                UserRole.USER.value: 1,
+                UserRole.SUPER_ADMIN: 4,
+                UserRole.SYSTEM_ADMIN: 3,
+                UserRole.COMPANY_ADMIN: 2,
+                UserRole.USER: 1,
             }
 
             user_role_level = role_hierarchy.get(current_user.role, 0)
-            required_role_level = role_hierarchy.get(minimum_role.value, 0)
+            required_role_level = role_hierarchy.get(minimum_role, 0)
 
             if user_role_level < required_role_level:
                 return jsonify({"error": "Insufficient permissions"}), 403
@@ -55,14 +55,14 @@ def company_admin_or_higher(f):
             return jsonify({"error": "Authentication required"}), 401
 
         if current_user.role not in [
-            UserRole.SUPER_ADMIN.value,
-            UserRole.SYSTEM_ADMIN.value,
-            UserRole.COMPANY_ADMIN.value,
+            UserRole.SUPER_ADMIN,
+            UserRole.SYSTEM_ADMIN,
+            UserRole.COMPANY_ADMIN,
         ]:
             return jsonify({"error": "Insufficient permissions"}), 403
 
         # For company admins, check if they're accessing their own company
-        if current_user.role == UserRole.COMPANY_ADMIN.value:
+        if current_user.role == UserRole.COMPANY_ADMIN:
             company_id = (
                 kwargs.get("company_id")
                 or request.args.get("company_id")
