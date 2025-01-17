@@ -16,6 +16,7 @@ dependencies = [
     "pyotp>=2.9.0",
     "pytest>=8.3.4",
     "python-dotenv>=1.0.1",
+    "pytz>=2024.2",
     "setuptools>=75.8.0",
     "twilio>=9.4.3",
 ]
