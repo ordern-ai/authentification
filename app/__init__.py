@@ -72,6 +72,7 @@ def create_app():
     from app.admin.routes import admin_bp
     from app.company.routes import company_bp
     from app.two_factor.routes import two_factor_bp
+    from app.auth.service import service_bp
 
     # blueprint access restrictions
     # @app.before_request
@@ -83,6 +84,7 @@ def create_app():
     app.register_blueprint(admin_bp, url_prefix="/admin")
     app.register_blueprint(company_bp, url_prefix="/company")
     app.register_blueprint(two_factor_bp, url_prefix="/two_factor")
+    app.register_blueprint(service_bp, url_prefix="/service")
 
     # create database models
     with app.app_context():
@@ -93,5 +95,14 @@ def create_app():
         def create_db():
 
             db.create_all()
+
+    @app.after_request
+    def add_security_headers(response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+        return response
 
     return app

@@ -4,11 +4,13 @@ from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
+    decode_token,
+    get_jwt,
     get_jwt_identity,
     jwt_required,
 )
 from datetime import datetime, timedelta
-import re
+
 
 from app.auth.token import refresh_access_token
 from app.two_factor.routes import send_email_code, send_sms_code, generate_totp_secret
@@ -22,13 +24,13 @@ from werkzeug.utils import secure_filename
 import os
 import uuid
 from datetime import datetime, timedelta
-import phonenumbers
 import logging
 
 logger = logging.getLogger(__name__)
 
 from app.auth.validators import validate_phone_number
 from app.utils.email import send_password_reset_email
+from app.blacklisting import add_token_to_blacklist, redis_client
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -147,6 +149,21 @@ def register():
 def login():
     data = request.get_json()
 
+    ip = request.remote_addr
+    attempts_key = f"login_attempts:{ip}"
+
+    if redis_client.exists(attempts_key):
+        attempts = int(redis_client.get(attempts_key))
+        if attempts >= current_app.config.get("MAX_LOGIN_ATTEMPTS", 5):
+            return (
+                jsonify({"error": "Too many login attempts. Please try again later"}),
+                429,
+            )
+
+    # Increment attempt counter
+    redis_client.incr(attempts_key)
+    redis_client.expire(attempts_key, 1800)  # 30 minutes expiry
+
     # Validate required fields
     if not all(k in data for k in ["email", "password"]):
         return jsonify({"error": "Missing email or password"}), 400
@@ -255,22 +272,27 @@ def login():
 
         log_auth_event(user.id, "login", request, "success")
 
-        return (
-            jsonify(
-                {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "user": {
-                        "id": user.id,
-                        "email": user.email,
-                        "role": user.role,
-                        "company_id": user.company_id,
-                        "two_factor_enabled": user.two_factor_enabled,
-                    },
-                }
-            ),
-            200,
+        response = jsonify(
+            {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "role": user.role,
+                    "company_id": user.company_id,
+                    "two_factor_enabled": user.two_factor_enabled,
+                },
+            }
         )
+
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+
+        return response, 200
 
     except Exception as e:
         print(f"Token creation error: {str(e)}")
@@ -312,8 +334,27 @@ def logout():
     current_user_id = get_jwt_identity()
 
     try:
+
+        jwt_claims = get_jwt()
+        jti = jwt_claims["jti"]
+        exp = jwt_claims["exp"]
+        
+        # Add token to blacklist
+        add_token_to_blacklist(jti, exp)
+
+
+        refresh_token = request.json.get('refresh_token')
+        if refresh_token:
+            try:
+                refresh_claims = decode_token(refresh_token)
+                add_token_to_blacklist(refresh_claims["jti"], refresh_claims["exp"])
+            except:
+                pass  # Ignore invalid refresh tokens
+            
+
+
         # Log the logout event
-        log_auth_event(current_user_id, "logout", request, "success")
+        log_auth_event(get_jwt_identity(), "logout", request, "success")
 
         # In a production environment, you might want to add the token to a blacklist
         # or invalidate it in your token storage
@@ -478,3 +519,54 @@ def reset_password():
         db.session.rollback()
         current_app.logger.error(f"Password reset failed: {str(e)}")
         return jsonify({"error": "Failed to reset password"}), 500
+
+
+# ---------------------------------------------------------------------------- #
+#                              Session management                              #
+# ---------------------------------------------------------------------------- #
+
+
+@auth_bp.route("/sessions", methods=["GET"])
+@jwt_required()
+def get_active_sessions():
+    """Get all active sessions for the current user"""
+    try:
+        user_id = get_jwt_identity()
+        sessions = AuthLog.query.filter(
+            AuthLog.user_id == user_id,
+            AuthLog.event_type == "login",
+            AuthLog.created_at >= (datetime.now() - timedelta(days=30))
+        ).all()
+        
+        return jsonify({
+            "sessions": [{
+                "id": session.id,
+                "ip_address": session.ip_address,
+                "user_agent": session.user_agent,
+                "created_at": session.created_at.isoformat()
+            } for session in sessions]
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": "Failed to retrieve sessions"}), 500
+
+@auth_bp.route("/sessions/<int:session_id>", methods=["DELETE"])
+@jwt_required()
+def terminate_session(session_id):
+    """Terminate a specific session"""
+    try:
+        user_id = get_jwt_identity()
+        session = AuthLog.query.filter_by(id=session_id, user_id=user_id).first()
+        
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+            
+        # Add associated token to blacklist
+        jwt_claims = get_jwt()
+        add_token_to_blacklist(jwt_claims["jti"], jwt_claims["exp"])
+        
+        log_auth_event(user_id, "session_terminated", request, "success")
+        return jsonify({"message": "Session terminated successfully"}), 200
+        
+    except Exception as e:
+        return jsonify({"error": "Failed to terminate session"}), 500
