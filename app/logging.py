@@ -1,3 +1,4 @@
+# logging.py contains functions for logging authentication events with detailed information for auditing and monitoring.
 from datetime import datetime
 from app.models import AuthLog, User
 
