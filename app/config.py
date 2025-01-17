@@ -14,5 +14,14 @@ class Config:
     JWT_TOKEN_LOCATION = ["headers"]
     JWT_HEADER_NAME = "Authorization"
     JWT_HEADER_TYPE = "Bearer"
+    UPLOAD_FOLDER = "uploads"
+    MAIL_SERVER = os.environ.get("MAIL_SERVER", "")
+    MAIL_PORT = 587
+    MAIL_USE_TLS = True
+    MAIL_USERNAME = os.environ.get("MAIL_USERNAME", "")
+    MAIL_PASSWORD = os.environ.get("MAIL_PASSWORD", "")
+    MAIL_DEFAULT_SENDER = os.environ.get("MAIL_DEFAULT_SENDER", "")
+    MAIL_MAX_EMAILS = 50
+    MAIL_TIMEOUT = 10
 
     DEBUG = True

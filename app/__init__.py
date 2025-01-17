@@ -7,6 +7,10 @@ from flask_mail import Mail
 import os
 from dotenv import load_dotenv
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -42,6 +46,7 @@ def create_app():
 
     @jwt.invalid_token_loader
     def invalid_token_callback(error):
+        print(error)
 
         return jsonify({"error": "Invalid token", "code": "invalid_token"}), 401
 
@@ -72,7 +77,7 @@ def create_app():
 
         @app.before_request
         def create_db():
-     
+
             db.create_all()
 
     return app

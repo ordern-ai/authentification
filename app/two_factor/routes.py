@@ -8,10 +8,8 @@ from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity,
 )
-from twilio.rest import Client
+
 from pyotp import TOTP
-import smtplib
-from email.mime.text import MIMEText
 
 from app.logging import log_auth_event
 from app.utils.totp import generate_totp_secret, verify_totp
@@ -19,40 +17,16 @@ from ..models import User, AuthLog
 from .. import db
 import os
 
+from app.utils.email import send_email_code
+from app.utils.sms import send_sms_code
+
 
 two_factor_bp = Blueprint("two_factor", __name__)
 
-# Initialize Twilio client
-twilio_client = Client(
-    os.environ.get("TWILIO_ACCOUNT_SID"), os.environ.get("TWILIO_AUTH_TOKEN")
-)
 
-
-
-
-
-def send_email_code(email, code):
-    """Send 2FA code via email"""
-    msg = MIMEText(f"Your verification code is: {code}")
-    msg["Subject"] = "Two-Factor Authentication Code"
-    msg["From"] = current_app.config["MAIL_DEFAULT_SENDER"]
-    msg["To"] = email
-
-    with smtplib.SMTP(current_app.config["MAIL_SERVER"]) as server:
-        server.starttls()
-        server.login(
-            current_app.config["MAIL_USERNAME"], current_app.config["MAIL_PASSWORD"]
-        )
-        server.send_message(msg)
-
-
-def send_sms_code(phone_number, code):
-    """Send 2FA code via SMS"""
-    twilio_client.messages.create(
-        body=f"Your verification code is: {code}",
-        from_=os.environ.get("TWILIO_PHONE_NUMBER"),
-        to=phone_number,
-    )
+# ---------------------------------------------------------------------------- #
+#                                   Setup 2FA                                  #
+# ---------------------------------------------------------------------------- #
 
 
 @two_factor_bp.route("/setup", methods=["POST"])
@@ -120,6 +94,11 @@ def setup_2fa():
         return jsonify({"error": "Failed to setup 2FA", "code": "setup_failed"}), 500
 
 
+# ---------------------------------------------------------------------------- #
+#                                verify 2FA code                               #
+# ---------------------------------------------------------------------------- #
+
+
 @two_factor_bp.route("/verify", methods=["POST"])
 def verify_2fa():
     """Verify 2FA code during login"""
@@ -183,6 +162,11 @@ def verify_2fa():
     db.session.commit()
 
     return jsonify({"error": "Invalid verification code"}), 401
+
+
+# ---------------------------------------------------------------------------- #
+#                                  Disable 2FA                                 #
+# ---------------------------------------------------------------------------- #
 
 
 @two_factor_bp.route("/disable", methods=["POST"])

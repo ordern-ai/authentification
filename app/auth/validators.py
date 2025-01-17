@@ -1,4 +1,5 @@
 import re
+import phonenumbers
 
 
 def validate_password(password):
@@ -23,3 +24,12 @@ def validate_email(email):
     Returns True if email format is valid, False otherwise
     """
     return bool(re.match(r"[^@]+@[^@]+\.[^@]+", email))
+
+
+def validate_phone_number(phone_number):
+    try:
+        # Parse and validate phone number using phonenumbers library
+        parsed_number = phonenumbers.parse(phone_number, None)
+        return phonenumbers.is_valid_number(parsed_number)
+    except Exception:
+        return False
