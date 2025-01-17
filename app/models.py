@@ -15,7 +15,7 @@ class User(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     two_factor_enabled = db.Column(db.Boolean, default=False)
     two_factor_method = db.Column(db.String(20))
-    two_factor_secret = db.Column(db.String(32))
+    two_factor_secret = db.Column(db.String())
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
 

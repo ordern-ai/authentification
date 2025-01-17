@@ -28,6 +28,13 @@ def create_app():
     mail.init_app(app)
     jwt.init_app(app)
 
+    from app.models import User
+
+    @jwt.user_lookup_loader
+    def user_lookup_callback(_jwt_header, jwt_data):
+        identity = jwt_data["sub"]
+        return User.query.get(identity)
+
     # Initialize JWT with additional error handlers
     @jwt.expired_token_loader
     def expired_token_callback(jwt_header, jwt_data):
@@ -35,6 +42,7 @@ def create_app():
 
     @jwt.invalid_token_loader
     def invalid_token_callback(error):
+
         return jsonify({"error": "Invalid token", "code": "invalid_token"}), 401
 
     @jwt.unauthorized_loader
@@ -60,8 +68,11 @@ def create_app():
     # create database models
     with app.app_context():
 
+        # delete and create all tables
+
         @app.before_request
         def create_db():
+     
             db.create_all()
 
     return app

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import re
 
 from app.auth.token import refresh_access_token
-from app.auth.two_factor import send_email_code, send_sms_code, generate_totp_secret
+from app.two_factor.routes import send_email_code, send_sms_code, generate_totp_secret
 from app.logging import log_auth_event
 from ..models import User, AuthLog, Company
 from .. import db, bcrypt
@@ -151,7 +151,7 @@ def login():
                 user.two_factor_secret = code
             elif user.two_factor_method == "sms":
                 code = str(random.randint(100000, 999999))
-                send_sms_code(user.phone_number, code)
+                send_sms_code("+237676065436", code)
                 user.two_factor_secret = code
             # For authenticator app, secret is already set
 
@@ -171,11 +171,16 @@ def login():
             log_auth_event(user.id, "2fa_setup_failed", request, "failure")
             return jsonify({"error": "Error setting up 2FA"}), 500
 
-
     try:
-        # Create both tokens separately
-        access_token = create_access_token(identity=user.id)
-        refresh_token = create_refresh_token(identity=user.id)
+        # Create tokens with additional claims if needed
+        additional_claims = {"role": user.role, "email": user.email}
+
+        access_token = create_access_token(
+            identity=str(user.id), additional_claims=additional_claims
+        )
+        refresh_token = create_refresh_token(
+            identity=str(user.id), additional_claims=additional_claims
+        )
 
         log_auth_event(user.id, "login", request, "success")
 
@@ -197,7 +202,7 @@ def login():
         )
 
     except Exception as e:
-        print(e)
+        print(f"Token creation error: {str(e)}")
         log_auth_event(user.id, "token_creation_failed", request, "failure")
         return jsonify({"error": "Error creating access token"}), 500
 
