@@ -31,7 +31,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 from app.auth.validators import validate_phone_number
-from app.utils.email import send_password_reset_email
+from app.utils.email import send_password_reset_email, send_email_suspicous_activity
+from app.utils.sms import send_suspicious_activity
 from app.blacklisting import add_token_to_blacklist, redis_client
 
 auth_bp = Blueprint("auth", __name__)
@@ -269,6 +270,18 @@ def login():
 
             # Check if already exceeded
             if attempts >= max_attempts:
+
+                # Log suspicious activity
+                user = User.query.filter_by(email=data["email"]).first()
+
+                if user:
+                    if user.phone_number:
+                        send_suspicious_activity(user.phone_number)
+                    if user.email:
+                        send_email_suspicous_activity(user.email)
+
+                log_auth_event(user.id, "suspicious_activity", request, "failure")
+
                 return (
                     jsonify(
                         {"error": "Too many login attempts. Please try again later"}

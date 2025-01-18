@@ -136,3 +136,32 @@ def send_password_reset_email(email, token):
 
 def send_password_reset_email(user_email, reset_token):
     pass
+
+
+def send_email_suspicous_activity(email):
+    """
+    Send email alert of suspicious activity
+
+    Args:
+        email (str): Recipient email address
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    subject = "Suspicious Activity Detected"
+    body = """
+    <html>
+        <body>
+            <h2>Suspicious Activity Detected</h2>
+            <p>We detected some suspicious activity on your account.</p>
+            <p>If this was not you, please login to verify your account.</p>
+        </body>
+    </html>
+    """
+
+    success, error = send_email(email, subject, body, is_html=True)
+    if not success:
+        logger.error(f"Failed to send suspicious activity email to {email}: {error}")
+        raise Exception(f"Failed to send suspicious activity email: {error}")
+
+    return success
