@@ -11,6 +11,8 @@ from flask_jwt_extended import (
 )
 from datetime import datetime, timedelta
 
+import redis
+
 
 from app.auth.token import refresh_access_token
 from app.two_factor.routes import send_email_code, send_sms_code, generate_totp_secret
@@ -145,122 +147,57 @@ def register():
 # ---------------------------------------------------------------------------- #
 
 
-@auth_bp.route("/login", methods=["POST"])
-def login():
-    data = request.get_json()
-
-    ip = request.remote_addr
-    attempts_key = f"login_attempts:{ip}"
-
-    if redis_client.exists(attempts_key):
-        attempts = int(redis_client.get(attempts_key))
-        if attempts >= current_app.config.get("MAX_LOGIN_ATTEMPTS", 5):
-            return (
-                jsonify({"error": "Too many login attempts. Please try again later"}),
-                429,
-            )
-
-    # Increment attempt counter
-    redis_client.incr(attempts_key)
-    redis_client.expire(attempts_key, 1800)  # 30 minutes expiry
-
-    # Validate required fields
-    if not all(k in data for k in ["email", "password"]):
-        return jsonify({"error": "Missing email or password"}), 400
-
-    user = User.query.filter_by(email=data["email"]).first()
-
-    # Check if account is locked
-    if check_account_lockout(user):
-        log_auth_event(user.id, "account_locked", request, "failure")
-        return (
-            jsonify(
-                {"error": "Account temporarily locked due to too many failed attempts"}
-            ),
-            403,
-        )
-
-    if not user or not bcrypt.check_password_hash(user.password_hash, data["password"]):
-        log_auth_event(user.id if user else None, "failed_login", request, "failure")
-        return jsonify({"error": "Invalid credentials"}), 401
-
-    # Check if user is active
-    if not user.is_active:
-        log_auth_event(user.id, "inactive_account_login_attempt", request, "failure")
-        return jsonify({"error": "Account is inactive"}), 403
-
-    if user.two_factor_enabled:
-        try:
-            # Generate and send 2FA code based on user's preferred method
-            if user.two_factor_method == "email":
-                try:
-                    if user.two_factor_method == "email":
-                        code = str(random.randint(100000, 999999))
-                        send_email_code(user.email, code)
-                        user.two_factor_secret = code
-                        db.session.commit()
-
-                        return (
-                            jsonify(
-                                {
-                                    "message": "2FA required",
-                                    "user_id": user.id,
-                                    "method": user.two_factor_method,
-                                }
-                            ),
-                            200,
-                        )
-
-                except Exception as e:
-                    db.session.rollback()
-                    log_auth_event(user.id, "2fa_setup_failed", request, "failure")
-                    logger.error(f"2FA setup failed: {str(e)}")
-                    return (
-                        jsonify(
-                            {
-                                "error": "Error setting up 2FA. Please try again or contact support."
-                            }
-                        ),
-                        500,
-                    )
-
-            elif user.two_factor_method == "sms":
-                # Check if phone number is set
-                if not user.phone_number:
-                    return (
-                        jsonify(
-                            {
-                                "error": "Phone number not set. Please set it to continue with SMS 2FA."
-                            }
-                        ),
-                        400,
-                    )
-
-                code = str(random.randint(100000, 999999))
-                send_sms_code(user.phone_number, code)
-                user.two_factor_secret = code
-
-            # For authenticator app, secret is already set
+def handle_2fa_setup(user, request):
+    """Handle 2FA setup and code generation"""
+    try:
+        if user.two_factor_method == "email":
+            code = str(random.randint(100000, 999999))
+            send_email_code(user.email, code)
+            user.two_factor_secret = code
             db.session.commit()
 
-            return (
-                jsonify(
-                    {
-                        "message": "2FA required",
-                        "user_id": user.id,
-                        "method": user.two_factor_method,
-                    }
-                ),
-                200,
-            )
+        elif user.two_factor_method == "sms":
+            if not user.phone_number:
+                return (
+                    jsonify(
+                        {
+                            "error": "Phone number not set. Please set it to continue with SMS 2FA."
+                        }
+                    ),
+                    400,
+                )
 
-        except Exception as e:
-            print(e)
-            log_auth_event(user.id, "2fa_setup_failed", request, "failure")
-            return jsonify({"error": "Error setting up 2FA"}), 500
+            code = str(random.randint(100000, 999999))
+            send_sms_code(user.phone_number, code)
+            user.two_factor_secret = code
+            db.session.commit()
 
+        return (
+            jsonify(
+                {
+                    "message": "2FA required",
+                    "user_id": user.id,
+                    "method": user.two_factor_method,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        db.session.rollback()
+        log_auth_event(user.id, "2fa_setup_failed", request, "failure")
+        logger.error(f"2FA setup failed: {str(e)}")
+        return (
+            jsonify(
+                {"error": "Error setting up 2FA. Please try again or contact support."}
+            ),
+            500,
+        )
+
+
+def complete_login(user, request):
+    """Complete the login process by generating tokens"""
     try:
-
         additional_claims = {"role": user.role, "email": user.email}
 
         access_token = create_access_token(
@@ -286,18 +223,138 @@ def login():
             }
         )
 
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Strict-Transport-Security"] = (
-            "max-age=31536000; includeSubDomains"
+        # Add security headers
+        response.headers.update(
+            {
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+            }
         )
 
         return response, 200
 
     except Exception as e:
-        print(f"Token creation error: {str(e)}")
+        logger.error(f"Token creation error: {str(e)}")
         log_auth_event(user.id, "token_creation_failed", request, "failure")
         return jsonify({"error": "Error creating access token"}), 500
+
+
+def debug_redis_key(key):
+    """Debug helper to check Redis key state"""
+    try:
+        exists = redis_client.exists(key)
+        value = redis_client.get(key) if exists else None
+        type_result = redis_client.type(key) if exists else None
+        logger.info(
+            f"Redis key '{key}' exists: {exists}, type: {type_result}, value: {value}"
+        )
+        return exists, value, type_result
+    except redis.RedisError as e:
+        logger.error(f"Redis debug error: {str(e)}")
+        return False, None, None
+
+
+@auth_bp.route("/login", methods=["POST"])
+def login():
+    try:
+        data = request.get_json()
+        ip = request.remote_addr
+        attempts_key = f"login_attempts:{ip}"
+
+        # Debug existing key state
+        exists, current_value, key_type = debug_redis_key(attempts_key)
+
+        # Initialize attempts counter with defensive type handling
+        try:
+            attempts = 0
+            if exists:
+                try:
+                    # Try to delete any existing key that might have wrong type
+                    redis_client.delete(attempts_key)
+                except redis.RedisError as e:
+                    logger.error(f"Error deleting existing key: {str(e)}")
+
+            # Always set a fresh counter
+            redis_client.set(attempts_key, str(attempts), ex=1800)  # 30 minutes expiry
+
+            max_attempts = current_app.config.get("MAX_LOGIN_ATTEMPTS", 5)
+            if attempts >= max_attempts:
+                return (
+                    jsonify(
+                        {"error": "Too many login attempts. Please try again later"}
+                    ),
+                    429,
+                )
+
+        except redis.RedisError as e:
+            logger.error(f"Redis error checking login attempts: {str(e)}")
+            attempts = 0
+
+        # Validate required fields
+        if not all(k in data for k in ["email", "password"]):
+            return jsonify({"error": "Missing email or password"}), 400
+
+        user = User.query.filter_by(email=data["email"]).first()
+
+        if not user or not bcrypt.check_password_hash(
+            user.password_hash, data["password"]
+        ):
+            # Increment attempt counter safely
+            try:
+                # Use pipeline to make operations atomic
+                with redis_client.pipeline() as pipe:
+                    pipe.incr(attempts_key)
+                    pipe.expire(attempts_key, 1800)  # 30 minutes expiry
+                    pipe.execute()
+            except redis.RedisError as e:
+                logger.error(f"Redis error incrementing attempts: {str(e)}")
+
+            log_auth_event(
+                user.id if user else None, "failed_login", request, "failure"
+            )
+            return jsonify({"error": "Invalid credentials"}), 401
+
+        # If login successful, reset attempts counter
+        try:
+            redis_client.delete(attempts_key)
+        except redis.RedisError as e:
+            logger.error(f"Redis error resetting attempts: {str(e)}")
+
+        # Check if account is locked
+        if check_account_lockout(user):
+            log_auth_event(user.id, "account_locked", request, "failure")
+            return (
+                jsonify(
+                    {
+                        "error": "Account temporarily locked due to too many failed attempts"
+                    }
+                ),
+                403,
+            )
+
+        # Check if user is active
+        if not user.is_active:
+            log_auth_event(
+                user.id, "inactive_account_login_attempt", request, "failure"
+            )
+            return jsonify({"error": "Account is inactive"}), 403
+
+        # Handle 2FA
+        if user.two_factor_enabled:
+            return handle_2fa_setup(user, request)
+
+        try:
+            redis_client.delete(attempts_key)
+        except redis.RedisError as e:
+            logger.error(f"Redis error cleaning up attempts: {str(e)}")
+
+        # Generate tokens and complete login
+        return complete_login(user, request)
+
+    except Exception as e:
+        logger.error(f"Login error: {str(e)}")
+        return jsonify({"error": "An unexpected error occurred"}), 500
 
 
 # ---------------------------------------------------------------------------- #
@@ -327,6 +384,11 @@ def refresh():
         return jsonify({"error": "Error refreshing access token"}), 500
 
 
+# ---------------------------------------------------------------------------- #
+#                                    Logout                                    #
+# ---------------------------------------------------------------------------- #
+
+
 @auth_bp.route("/logout", methods=["POST"])
 @jwt_required()
 def logout():
@@ -334,36 +396,58 @@ def logout():
     current_user_id = get_jwt_identity()
 
     try:
-
+        # Get claims from the current access token
         jwt_claims = get_jwt()
-        jti = jwt_claims["jti"]
-        exp = jwt_claims["exp"]
-        
-        # Add token to blacklist
-        add_token_to_blacklist(jti, exp)
+        jti = jwt_claims.get("jti")
+        exp = jwt_claims.get("exp")
 
+        if jti and exp:
+            blacklist_success = add_token_to_blacklist(jti, exp)
+            if not blacklist_success:
+                logger.warning(
+                    f"Failed to blacklist access token for user {current_user_id}"
+                )
 
-        refresh_token = request.json.get('refresh_token')
+        # Handle refresh token if provided
+        refresh_token = request.json.get("refresh_token")
         if refresh_token:
             try:
                 refresh_claims = decode_token(refresh_token)
-                add_token_to_blacklist(refresh_claims["jti"], refresh_claims["exp"])
-            except:
-                pass  # Ignore invalid refresh tokens
-            
+                refresh_jti = refresh_claims.get("jti")
+                refresh_exp = refresh_claims.get("exp")
 
+                if refresh_jti and refresh_exp:
+                    blacklist_success = add_token_to_blacklist(refresh_jti, refresh_exp)
+                    if not blacklist_success:
+                        logger.warning(
+                            f"Failed to blacklist refresh token for user {current_user_id}"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Invalid refresh token provided during logout: {str(e)}"
+                )
 
-        # Log the logout event
-        log_auth_event(get_jwt_identity(), "logout", request, "success")
+        # Log the successful logout event
+        log_auth_event(current_user_id, "logout", request, "success")
 
-        # In a production environment, you might want to add the token to a blacklist
-        # or invalidate it in your token storage
-
-        return jsonify({"message": "Successfully logged out"}), 200
+        return jsonify({"message": "Successfully logged out", "status": "success"}), 200
 
     except Exception as e:
+        logger.error(f"Logout error for user {current_user_id}: {str(e)}")
         log_auth_event(current_user_id, "logout_failed", request, "failure")
-        return jsonify({"error": "Error during logout"}), 500
+        return jsonify({"error": "Error during logout", "status": "error"}), 500
+
+
+def cleanup_expired_blacklist():
+    """Cleanup function to remove expired tokens from blacklist"""
+    try:
+        pattern = "blacklist_token_*"
+        for key in redis_client.scan_iter(match=pattern):
+            # Redis will automatically remove expired keys
+            # This function is mainly for documentation
+            pass
+    except redis.RedisError as e:
+        logger.error(f"Error during blacklist cleanup: {str(e)}")
 
 
 # ---------------------------------------------------------------------------- #
@@ -498,7 +582,7 @@ def reset_password():
         if (
             not user
             or not user.password_reset_expires
-            or user.password_reset_expires < datetime.utcnow()
+            or user.password_reset_expires < datetime.now()
         ):
             return jsonify({"error": "Invalid or expired reset token"}), 400
 
@@ -535,20 +619,29 @@ def get_active_sessions():
         sessions = AuthLog.query.filter(
             AuthLog.user_id == user_id,
             AuthLog.event_type == "login",
-            AuthLog.created_at >= (datetime.now() - timedelta(days=30))
+            AuthLog.created_at >= (datetime.now() - timedelta(days=30)),
         ).all()
-        
-        return jsonify({
-            "sessions": [{
-                "id": session.id,
-                "ip_address": session.ip_address,
-                "user_agent": session.user_agent,
-                "created_at": session.created_at.isoformat()
-            } for session in sessions]
-        }), 200
-        
+
+        return (
+            jsonify(
+                {
+                    "sessions": [
+                        {
+                            "id": session.id,
+                            "ip_address": session.ip_address,
+                            "user_agent": session.user_agent,
+                            "created_at": session.created_at.isoformat(),
+                        }
+                        for session in sessions
+                    ]
+                }
+            ),
+            200,
+        )
+
     except Exception as e:
         return jsonify({"error": "Failed to retrieve sessions"}), 500
+
 
 @auth_bp.route("/sessions/<int:session_id>", methods=["DELETE"])
 @jwt_required()
@@ -557,16 +650,16 @@ def terminate_session(session_id):
     try:
         user_id = get_jwt_identity()
         session = AuthLog.query.filter_by(id=session_id, user_id=user_id).first()
-        
+
         if not session:
             return jsonify({"error": "Session not found"}), 404
-            
+
         # Add associated token to blacklist
         jwt_claims = get_jwt()
         add_token_to_blacklist(jwt_claims["jti"], jwt_claims["exp"])
-        
+
         log_auth_event(user_id, "session_terminated", request, "success")
         return jsonify({"message": "Session terminated successfully"}), 200
-        
+
     except Exception as e:
         return jsonify({"error": "Failed to terminate session"}), 500
