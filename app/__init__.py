@@ -118,6 +118,7 @@ def create_app():
 
     @app.errorhandler(403)
     def forbidden(e):
+
         return {
             "error": "Forbidden",
             "message": "Your IP is not authorized to access this resource",
@@ -129,6 +130,8 @@ def create_app():
     from app.company.routes import company_bp
     from app.two_factor.routes import two_factor_bp
     from app.auth.service import service_bp
+
+    restrict_blueprint_access("admin")
 
     app.register_blueprint(auth_bp, url_prefix="/auth")
     app.register_blueprint(admin_bp, url_prefix="/admin")
