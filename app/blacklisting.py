@@ -36,7 +36,7 @@ def add_token_to_blacklist(jti, exp):
         ttl = max(1, exp_timestamp - current_timestamp)  # Minimum 1 second TTL
 
         # Use simple key-value storage with string value
-        blacklist_key = f"blacklist_token_{jti}"
+        blacklist_key = f"blacklist_token:{jti}"
 
         # Store as a simple string flag
         success = redis_client.set(
@@ -75,8 +75,18 @@ def is_token_blacklisted(jti):
             logger.error(f"Invalid JTI value in check: {jti}")
             return True  # Fail secure
 
-        blacklist_key = f"blacklist_token_{jti}"
-        return bool(redis_client.exists(blacklist_key))
+        blacklist_key = f"blacklist_token:{jti}"
+
+        # Log the redis client type and key for debugging
+        logger.debug(f"Redis client type: {type(redis_client)}")
+        logger.debug(f"Checking key: {blacklist_key}")
+
+        # Try getting the value first to debug
+        result = redis_client.get(blacklist_key)
+        print(result)
+        logger.debug(f"Raw result from Redis: {result}, type: {type(result)}")
+
+        return bool(result)
     except redis.RedisError as e:
         logger.error(f"Redis error checking blacklist: {str(e)}")
         return True  # Fail secure - treat as blacklisted if Redis is down
@@ -86,8 +96,8 @@ def is_token_blacklisted(jti):
 
 
 redis_client = redis.Redis(
-    host=os.environ.get("REDIS_HOST", "localhost"),
-    port=os.environ.get("REDIS_PORT", 6379),
+    host=os.environ.get("REDIS_HOST"),
+    port=os.environ.get("REDIS_PORT"),
     decode_responses=True,
     db=os.environ.get("REDIS_DB"),
     username=os.environ.get("REDIS_USERNAME"),

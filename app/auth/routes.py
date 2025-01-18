@@ -262,23 +262,12 @@ def login():
         ip = request.remote_addr
         attempts_key = f"login_attempts:{ip}"
 
-        # Debug existing key state
-        exists, current_value, key_type = debug_redis_key(attempts_key)
-
-        # Initialize attempts counter with defensive type handling
+        # Get current attempts count with defensive handling
         try:
-            attempts = 0
-            if exists:
-                try:
-                    # Try to delete any existing key that might have wrong type
-                    redis_client.delete(attempts_key)
-                except redis.RedisError as e:
-                    logger.error(f"Error deleting existing key: {str(e)}")
-
-            # Always set a fresh counter
-            redis_client.set(attempts_key, str(attempts), ex=1800)  # 30 minutes expiry
-
+            attempts = int(redis_client.get(attempts_key) or 0)
             max_attempts = current_app.config.get("MAX_LOGIN_ATTEMPTS", 5)
+
+            # Check if already exceeded
             if attempts >= max_attempts:
                 return (
                     jsonify(

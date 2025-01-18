@@ -8,7 +8,9 @@ from flask_mail import Mail
 import os
 from dotenv import load_dotenv
 from app.access import restrict_blueprint_access
-from app.blacklisting import redis_client
+from app.blacklisting import is_token_blacklisted, redis_client
+from flask_jwt_extended.utils import decode_token
+
 
 import logging
 
@@ -21,6 +23,7 @@ db = SQLAlchemy()
 jwt = JWTManager()
 bcrypt = Bcrypt()
 mail = Mail()
+
 
 def create_app():
     app = Flask(__name__)
@@ -41,7 +44,8 @@ def create_app():
         """Check if the token has been revoked"""
         try:
             jti = jwt_payload["jti"]
-            token_in_redis = redis_client.get(f"blacklist_token_{jti}")
+            token_in_redis = redis_client.get(f"blacklist_token:{jti}")
+
             return token_in_redis is not None
         except Exception as e:
             logger.error(f"Error checking token blacklist: {str(e)}")
@@ -50,10 +54,10 @@ def create_app():
     @jwt.revoked_token_loader
     def revoked_token_callback(jwt_header, jwt_payload):
         """Handle revoked/blacklisted token attempts"""
-        return jsonify({
-            "error": "Token has been revoked",
-            "code": "token_revoked"
-        }), 401
+        return (
+            jsonify({"error": "Token has been revoked", "code": "token_revoked"}),
+            401,
+        )
 
     @jwt.user_lookup_loader
     def user_lookup_callback(_jwt_header, jwt_data):
@@ -62,59 +66,55 @@ def create_app():
 
     @jwt.expired_token_loader
     def expired_token_callback(jwt_header, jwt_data):
-        return jsonify({
-            "error": "Token has expired",
-            "code": "token_expired"
-        }), 401
+        return jsonify({"error": "Token has expired", "code": "token_expired"}), 401
 
     @jwt.invalid_token_loader
     def invalid_token_callback(error):
         logger.error(f"Invalid token error: {error}")
-        return jsonify({
-            "error": "Invalid token",
-            "code": "invalid_token"
-        }), 401
+        return jsonify({"error": "Invalid token", "code": "invalid_token"}), 401
 
     @jwt.unauthorized_loader
     def missing_token_callback(error):
-        return jsonify({
-            "error": "Authorization token is missing",
-            "code": "missing_token"
-        }), 401
+        return (
+            jsonify(
+                {"error": "Authorization token is missing", "code": "missing_token"}
+            ),
+            401,
+        )
 
     @app.before_request
     def verify_jwt_in_request():
         """Check JWT token and blacklist status for protected routes"""
         # Skip token check for non-protected routes
         if request.endpoint and any(
-            request.endpoint.startswith(prefix) 
-            for prefix in ['auth.login', 'auth.register', 'static']
+            request.endpoint.startswith(prefix)
+            for prefix in ["auth.login", "auth.register", "static"]
         ):
             return
 
         try:
             # Get the JWT from the request
-            auth_header = request.headers.get('Authorization')
-            if not auth_header or not auth_header.startswith('Bearer '):
+            auth_header = request.headers.get("Authorization")
+            if not auth_header or not auth_header.startswith("Bearer "):
                 return
 
-            token = auth_header.split(' ')[1]
-            jwt_data = jwt.decode_token(token)
-            
+            token = auth_header.split(" ")[1]
+            jwt_data = decode_token(token)
+
             # Check if token is blacklisted
             jti = jwt_data["jti"]
-            if redis_client.get(f"blacklist_token_{jti}"):
-                return jsonify({
-                    "error": "Token has been revoked",
-                    "code": "token_revoked"
-                }), 401
+
+            if is_token_blacklisted(jti):
+                return (
+                    jsonify(
+                        {"error": "Token has been revoked", "code": "token_revoked"}
+                    ),
+                    401,
+                )
 
         except Exception as e:
             logger.error(f"Token verification error: {str(e)}")
-            return jsonify({
-                "error": "Invalid token",
-                "code": "invalid_token"
-            }), 401
+            return jsonify({"error": "Invalid token", "code": "invalid_token"}), 401
 
     @app.errorhandler(403)
     def forbidden(e):
@@ -138,17 +138,20 @@ def create_app():
 
     # Create database models
     with app.app_context():
+
         @app.before_request
         def create_db():
             db.create_all()
 
     @app.after_request
     def add_security_headers(response):
-        response.headers.update({
-            "X-Content-Type-Options": "nosniff",
-            "X-Frame-Options": "DENY",
-            "Strict-Transport-Security": "max-age=31536000; includeSubDomains"
-        })
+        response.headers.update(
+            {
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+            }
+        )
         return response
 
     return app
